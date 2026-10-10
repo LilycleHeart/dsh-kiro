@@ -14,10 +14,13 @@
  * - Tool results are per-turn context on the user message that carries them,
  *   and the service rejects a result whose `toolUseId` no history entry
  *   issued, so unmatched results degrade to text.
+ * - History is capped by entry count, not tokens: past the cap the service
+ *   answers `Input is too long.`, so the oldest entries fold into one text turn.
  *
  * @module dsh-kiro/serialize
  */
 
+import { createHash } from 'node:crypto'
 import { contentHasImage, LlmError } from '@deepseek-ai/dsh-llm'
 import type { AssistantMessage, ContentBlock, GenerateOptions, RequestMessage, ToolResultMessage } from '@deepseek-ai/dsh-llm'
 import type {
@@ -53,8 +56,34 @@ export const ACKNOWLEDGE_PADDING = 'understood'
 export const LEGACY_CONTINUATION = '[system: conversation continues]'
 /** Content for a user turn that carries only tool results. */
 const TOOL_RESULTS_ONLY = 'Tool results provided.'
+/**
+ * Most history entries the service accepts. Verified live: 198 passes and 200
+ * fails with `Input is too long.` at any token count, for text and tool turns.
+ */
+export const MAX_HISTORY_ENTRIES = 198
+/**
+ * Entries folded at a time: one fold, then about 74 append-only steps before
+ * the next, so the provider's prefix cache misses once per block rather than
+ * every turn. Each fold keeps the latest ~50 entries as structured turns.
+ */
+const FOLD_BLOCK = 150
 /** Tool names CodeWhisperer accepts verbatim. */
 const TOOL_NAME_PATTERN = /^[A-Za-z][A-Za-z0-9_]{0,63}$/
+/**
+ * Tool-use ids CodeWhisperer accepts verbatim (verified live). Anything else,
+ * such as another provider's `call_…|fc_…` ids replayed after a model switch,
+ * fails the whole request with HTTP 400 `Invalid tool use format.`
+ */
+const TOOL_USE_ID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/
+
+/**
+ * Map a harness tool-call id onto one Kiro accepts. Deterministic, so a call
+ * and its result still pair and the replayed prefix stays cache-stable.
+ */
+export function wireToolUseId(id: string): string {
+  if (TOOL_USE_ID_PATTERN.test(id)) return id
+  return `tooluse_${createHash('sha256').update(id).digest('base64url').slice(0, 32)}`
+}
 
 /** Adapter-level request defaults resolved from plugin config. */
 export interface RequestDefaults {
@@ -304,7 +333,7 @@ function assertToolName(name: string): string {
 /** Serialize the tool-result blocks of one message. */
 function toolResultsOf(message: ToolResultMessage): WireToolResult[] {
   return [{
-    toolUseId: message.toolCallId,
+    toolUseId: wireToolUseId(message.toolCallId),
     // Empty tool output still needs content on the wire.
     content: [{ text: flattenText(message.content) || '(no output)' }],
     status: message.isError === true ? 'error' : 'success',
@@ -316,7 +345,7 @@ function toolUsesOf(message: AssistantMessage): WireToolUse[] {
   return message.content
     .filter(block => block.type === 'tool-call')
     .map(block => ({
-      toolUseId: block.id,
+      toolUseId: wireToolUseId(block.id),
       name: assertToolName(block.name),
       // Kiro takes parsed arguments; the harness carries the model's raw JSON
       // string. Unparsable arguments reach the model as text below.
@@ -420,6 +449,55 @@ function userMessage(
   }
 }
 
+/** A tool result as text, for a result whose call is no longer on the wire. */
+function resultText(result: WireToolResult): string {
+  return `[Output for tool call ${result.toolUseId}]:\n${result.content[0]?.text ?? ''}`
+}
+
+/**
+ * Fold the oldest history entries into one text turn once history passes the
+ * service cap. Content is kept, not dropped: only its structure changes, and
+ * deciding what the conversation holds stays with the harness's compaction.
+ * @param history - alternating history starting on a user entry and ending on an assistant one; edited in place.
+ * @param model - the wire model id for the folded user turn.
+ */
+function foldOverflow(history: WireHistoryEntry[], model: string): void {
+  if (history.length <= MAX_HISTORY_ENTRIES) return
+  // Even, so the fold ends on an assistant entry and alternation survives.
+  const count = Math.ceil((history.length - (MAX_HISTORY_ENTRIES - 2)) / FOLD_BLOCK) * FOLD_BLOCK
+  const lines = ['Earlier in this conversation:']
+  const images: WireImageBlock[] = []
+  for (const entry of history.slice(0, count)) {
+    if ('userInputMessage' in entry) {
+      const message = entry.userInputMessage
+      lines.push(`User: ${message.content}`, ...(message.userInputMessageContext?.toolResults ?? []).map(resultText))
+      images.push(...message.images ?? [])
+      continue
+    }
+    const message = entry.assistantResponseMessage
+    lines.push(
+      `Assistant: ${message.content}`,
+      ...(message.toolUses ?? []).map(use => `[Tool call ${use.toolUseId}: ${use.name} ${JSON.stringify(use.input)}]`),
+    )
+  }
+  history.splice(
+    0,
+    count,
+    { userInputMessage: userMessage({ text: lines.join('\n\n'), toolResults: [], images }, model) },
+    { assistantResponseMessage: { content: ACKNOWLEDGE_PADDING } },
+  )
+  // The first kept user turn answers calls that were just folded; the service
+  // rejects results for calls it never saw, so they travel as text too.
+  const head = history[2]
+  const results = head !== undefined && 'userInputMessage' in head
+    ? head.userInputMessage.userInputMessageContext?.toolResults ?? []
+    : []
+  if (head !== undefined && 'userInputMessage' in head && results.length > 0) {
+    head.userInputMessage.content = [head.userInputMessage.content, ...results.map(resultText)].join('\n\n')
+    delete head.userInputMessage.userInputMessageContext
+  }
+}
+
 /**
  * Build the complete wire request.
  *
@@ -497,6 +575,7 @@ export function serializeRequest(
   if (history.length % 2 !== 0) {
     history.push({ assistantResponseMessage: { content: ACKNOWLEDGE_PADDING } })
   }
+  foldOverflow(history, options.model)
 
   const issued = new Set(history.flatMap(entry =>
     'assistantResponseMessage' in entry
@@ -507,8 +586,7 @@ export function serializeRequest(
   const matched = current.turn.toolResults.filter(result => issued.has(result.toolUseId))
   const orphaned = current.turn.toolResults.filter(result => !issued.has(result.toolUseId))
   const text = orphaned.reduce(
-    (accumulated, result) =>
-      `${accumulated}\n\n[Output for tool call ${result.toolUseId}]:\n${result.content[0]?.text ?? ''}`,
+    (accumulated, result) => `${accumulated}\n\n${resultText(result)}`,
     current.turn.text,
   )
 

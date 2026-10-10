@@ -9,7 +9,7 @@
  */
 import { LlmAdapter } from '@deepseek-ai/dsh-llm';
 import type { GenerateOptions, LlmModelInfo, LlmProviderInfo, LlmResolvedModelInfo, ModelModality, ResolvedRetryPolicy, StreamChunk } from '@deepseek-ai/dsh-llm';
-import type { ImageAttachmentRef, ImageMediaType } from '@deepseek-ai/dsh-attachment';
+import type { ImageAttachmentRef, ImageMediaType, ImageRequestTarget } from '@deepseek-ai/dsh-attachment';
 import type { RequestDefaults } from './serialize.ts';
 import type { KiroToken } from './auth.ts';
 /** Default maximum idle interval while an outstanding provider read is pending. */
@@ -113,10 +113,7 @@ export interface KiroAdapterOptions {
 }
 /** The attachment-store surface this adapter uses: one call, by reference. */
 export interface AttachmentStore {
-    readImageRequest: (ref: ImageAttachmentRef, policy: {
-        maxPixels: number;
-        maxBytes: number;
-    }, signal?: AbortSignal) => Promise<{
+    readImageRequest: (ref: ImageAttachmentRef, target: ImageRequestTarget, signal?: AbortSignal) => Promise<{
         data: Uint8Array;
         mediaType: ImageMediaType;
     }>;

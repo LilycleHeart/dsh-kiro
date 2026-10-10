@@ -147,6 +147,31 @@ describe('Kiro model discovery', () => {
     expect(request.mock.calls[0]?.[0]).toContain('profileArn=arn%3Aaws%3Acodewhisperer%3Aeu-central-1')
   })
 
+  it('continues discovery when a regional profile host is unavailable', async () => {
+    const request = vi.fn().mockResolvedValue({
+      status: 200,
+      body: { models: [{ modelId: 'claude-opus-4.8' }] },
+    })
+    const profiles = vi.fn(async (url: string) => {
+      if (url.includes('eu-central-1')) throw new Error('getaddrinfo ENOTFOUND')
+      return {
+        status: 200,
+        body: { profiles: [{ arn: 'arn:aws:codewhisperer:us-east-1:123456789012:profile/default' }] },
+      }
+    })
+    const discovery = new KiroModelDiscovery({
+      resolveToken: async () => ({
+        accessToken: 'access', region: 'eu-central-1', expiresAt: Date.now() + 60_000, authMethod: 'builder-id',
+      }),
+      requestJson: request,
+      profileRequestJson: profiles,
+    })
+    const regionalConnection = { ...connection, region: 'eu-central-1', profileArn: undefined }
+
+    await expect(discovery.list(regionalConnection, new AbortController().signal)).resolves.toHaveLength(1)
+    expect(request.mock.calls[0]?.[0]).toContain('https://codewhisperer.us-east-1.amazonaws.com/ListAvailableModels?')
+  })
+
   it('reads the advertised max_tokens bounds from the live schema', () => {
     // Observed live for claude-opus-5: the schema declares an integer
     // `max_tokens` with a floor and a ceiling, and forbids extra properties.

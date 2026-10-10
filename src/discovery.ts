@@ -115,7 +115,9 @@ export async function discoverKiroProfileArn(
   const candidates = [...new Set([connection.region, token.region, 'us-east-1', 'eu-central-1']
     .filter((candidate): candidate is string => candidate !== undefined))]
   for (const candidate of candidates) {
-    const endpoint = `https://codewhisperer.${candidate}.amazonaws.com`
+    const endpoint = candidate === 'us-east-1'
+      ? 'https://codewhisperer.us-east-1.amazonaws.com'
+      : `https://q.${candidate}.amazonaws.com`
     const attempts = [
       { url: `${endpoint}/ListAvailableProfiles`, headers: authHeaders(token) },
       {
@@ -128,13 +130,22 @@ export async function discoverKiroProfileArn(
       },
     ]
     for (const attempt of attempts) {
-      const response = await request(
-        attempt.url,
-        { maxResults: 50 },
-        attempt.headers,
-        connection.proxyUrl,
-        signal,
-      )
+      let response: Awaited<ReturnType<ProfileDiscoveryRequest>>
+      try {
+        response = await request(
+          attempt.url,
+          { maxResults: 50 },
+          attempt.headers,
+          connection.proxyUrl,
+          signal,
+        )
+      } catch (error) {
+        // Profile discovery is best-effort: some regional CodeWhisperer hosts
+        // do not resolve even though the account's model endpoint works. Keep
+        // trying the remaining candidates, but preserve caller cancellation.
+        if (signal.aborted) throw error
+        continue
+      }
       if (response.status !== 200) continue
       const profiles = record(response.body)?.profiles
       if (!Array.isArray(profiles)) continue

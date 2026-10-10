@@ -14,6 +14,8 @@
  * - Tool results are per-turn context on the user message that carries them,
  *   and the service rejects a result whose `toolUseId` no history entry
  *   issued, so unmatched results degrade to text.
+ * - History is capped by entry count, not tokens: past the cap the service
+ *   answers `Input is too long.`, so the oldest entries fold into one text turn.
  *
  * @module dsh-kiro/serialize
  */
@@ -38,6 +40,16 @@ export declare const ACKNOWLEDGE_PADDING = "understood";
  * rather than replaying them into the model's context again.
  */
 export declare const LEGACY_CONTINUATION = "[system: conversation continues]";
+/**
+ * Most history entries the service accepts. Verified live: 198 passes and 200
+ * fails with `Input is too long.` at any token count, for text and tool turns.
+ */
+export declare const MAX_HISTORY_ENTRIES = 198;
+/**
+ * Map a harness tool-call id onto one Kiro accepts. Deterministic, so a call
+ * and its result still pair and the replayed prefix stays cache-stable.
+ */
+export declare function wireToolUseId(id: string): string;
 /** Adapter-level request defaults resolved from plugin config. */
 export interface RequestDefaults {
     /** Deployment thinking policy; `disabled` refuses every request-level enable. */

@@ -211,11 +211,13 @@ describe('Kiro request identity and generation options', () => {
   it('sends a user image as a wire image block on a vision model', async () => {
     respond = () => okResponse(textFrame('a cat'))
     const read: string[] = []
+    const targets: unknown[] = []
     const chunks: { type: string }[] = []
     for await (const chunk of adapter(connection(), {
       resolveAttachments: () => ({
-        readImageRequest: async (ref: { attachmentId: string }) => {
+        readImageRequest: async (ref: { attachmentId: string }, target: unknown) => {
           read.push(ref.attachmentId)
+          targets.push(target)
           return { data: new Uint8Array([1, 2, 3]), mediaType: 'image/png' as const }
         },
       }),
@@ -227,6 +229,8 @@ describe('Kiro request identity and generation options', () => {
       chunks.push(chunk as { type: string })
     }
     expect(read).toEqual(['att-1'])
+    // The attachment store validates exact integer target dimensions.
+    expect(targets).toEqual([{ width: 1, height: 1, maxBytes: 3_750_000 }])
     const body = JSON.parse(posted.at(-1)?.body ?? '{}') as WireRequest
     expect(body.conversationState.currentMessage.userInputMessage.images).toEqual([
       { format: 'png', source: { bytes: 'AQID' } },

@@ -31,7 +31,8 @@ import type {
   ResolvedRetryPolicy,
   StreamChunk,
 } from '@deepseek-ai/dsh-llm'
-import type { AttachmentId, ImageAttachmentRef, ImageMediaType } from '@deepseek-ai/dsh-attachment'
+import { requestImageDimensions } from '@deepseek-ai/dsh-attachment'
+import type { AttachmentId, ImageAttachmentRef, ImageMediaType, ImageRequestTarget } from '@deepseek-ai/dsh-attachment'
 import { idleWatchdog, timeoutOf } from '@deepseek-ai/dsh-timeout'
 import { decodeFrames } from './eventstream.ts'
 import { serializeRequest } from './serialize.ts'
@@ -209,7 +210,7 @@ export interface KiroAdapterOptions {
 export interface AttachmentStore {
   readImageRequest: (
     ref: ImageAttachmentRef,
-    policy: { maxPixels: number; maxBytes: number },
+    target: ImageRequestTarget,
     signal?: AbortSignal,
   ) => Promise<{ data: Uint8Array; mediaType: ImageMediaType }>
 }
@@ -290,9 +291,11 @@ async function prepareImages(
     )
   }
   for (const [id, ref] of refs) {
+    // The store takes exact target dimensions; the pixel ceiling is projected
+    // onto them here, as the bundled routes do.
     const version = await store.readImageRequest(
       ref,
-      { maxPixels: IMAGE_MAX_PIXELS, maxBytes: IMAGE_MAX_BYTES },
+      { ...requestImageDimensions(ref.width, ref.height, IMAGE_MAX_PIXELS), maxBytes: IMAGE_MAX_BYTES },
       signal,
     )
     const format = IMAGE_FORMATS.get(version.mediaType)

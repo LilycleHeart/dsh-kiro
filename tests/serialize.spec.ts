@@ -237,6 +237,71 @@ describe('serializeRequest', () => {
     expect(currentOf(request).content).toBe('Tool results provided.')
   })
 
+  it('rewrites a foreign tool-call id Kiro rejects, keeping call and result paired', () => {
+    // Codex ids replayed after switching the session's model to Kiro.
+    const codexId = 'call_0lx9PIkFKkM32YzX11jiARuO|fc_06f12345a6aaa55d016ab6efee5e8887d1ae4f4f739af1b6b8'
+    const request = serialize([
+      user('weather?'),
+      assistant('', [{ id: codexId, name: 'get_weather', args: '{}' }]),
+      toolResult(codexId, 'sunny'),
+    ])
+    const last = history(request).at(-1)
+    const useId = last !== undefined && 'assistantResponseMessage' in last
+      ? last.assistantResponseMessage.toolUses?.[0]?.toolUseId
+      : undefined
+    expect(useId).toMatch(/^[A-Za-z0-9_-]{1,64}$/)
+    expect(currentOf(request).userInputMessageContext?.toolResults?.[0]?.toolUseId).toBe(useId)
+  })
+
+  it('folds the oldest turns into text once history passes the service cap', () => {
+    // Kiro refuses more than 198 history entries with "Input is too long."
+    // whatever the token count; 150 tool steps produce 300 entries.
+    const messages: Message[] = [user('q0')]
+    for (let i = 0; i < 150; i++) {
+      messages.push(assistant(`a${i}`, [{ id: `c${i}`, name: 'run', args: `{"i":${i}}` }]))
+      messages.push(toolResult(`c${i}`, `out${i}`))
+    }
+    const request = serialize(messages)
+    const entries = history(request)
+    expect(entries.length).toBeLessThanOrEqual(198)
+    expect(entries.length % 2).toBe(0)
+    const folded = entries[0]
+    const foldedText = folded !== undefined && 'userInputMessage' in folded ? folded.userInputMessage.content : ''
+    for (const fragment of ['q0', 'a0', 'out0', '{"i":0}']) expect(foldedText).toContain(fragment)
+    expect(JSON.stringify(request)).toContain('out148')
+    // Every replayed result still names a call the wire issued.
+    const issued = new Set<string>()
+    entries.forEach((entry, index) => {
+      expect('userInputMessage' in entry).toBe(index % 2 === 0)
+      if ('assistantResponseMessage' in entry) {
+        for (const use of entry.assistantResponseMessage.toolUses ?? []) issued.add(use.toolUseId)
+        return
+      }
+      for (const result of entry.userInputMessage.userInputMessageContext?.toolResults ?? []) {
+        expect(issued.has(result.toolUseId)).toBe(true)
+      }
+    })
+    expect(currentOf(request).userInputMessageContext?.toolResults?.[0]?.toolUseId).toBe('c149')
+  })
+
+  it('only appends between folds, so the cached prefix survives each step', () => {
+    const messages: Message[] = [user('q0')]
+    for (let i = 0; i < 250; i++) {
+      messages.push(assistant(`a${i}`, [{ id: `c${i}`, name: 'run', args: '{}' }]))
+      messages.push(toolResult(`c${i}`, `out${i}`))
+    }
+    const rewrites: number[] = []
+    let previous: string[] = []
+    for (let steps = 90; steps <= 250; steps++) {
+      const entries = history(serialize(messages.slice(0, 1 + steps * 2), { system: 'SYS' }))
+        .map(entry => JSON.stringify(entry))
+      if (!previous.every((entry, index) => entries[index] === entry)) rewrites.push(steps)
+      previous = entries
+    }
+    // One fold roughly every 74 steps; every step in between extends the last request.
+    expect(rewrites).toEqual([100, 174, 249])
+  })
+
   it('marks a failed tool result as an error', () => {
     const request = serialize([
       user('weather?'),
