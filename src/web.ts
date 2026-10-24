@@ -5,6 +5,7 @@ import '@deepseek-ai/dsh-host-webserver'
 import { unlink } from 'node:fs/promises'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { join } from 'node:path'
+import { contextCapacity } from './adapter.ts'
 import type { KiroCatalogModel, KiroConnectionOptions } from './adapter.ts'
 import { KiroAccountStore } from './accounts.ts'
 import { kiroCredentialDirectory } from './auth.ts'
@@ -117,6 +118,38 @@ function refreshTokenOrigin(value: unknown): RefreshTokenOrigin | undefined {
   throw new Error(`Unsupported Kiro refresh-token credential source "${named}"`)
 }
 
+/**
+ * The Host service that persists a plugin's own profile row.
+ *
+ * Declared structurally rather than imported: the plugin uses one method pair of
+ * an optional Host service, and taking a dependency on its package to name them
+ * would tie this plugin's install to a package it otherwise never touches.
+ */
+interface ConfigurationEditor {
+  /** Active profile rows with unique patch ids. */
+  entries(): { options: { id: string; name?: string } }[]
+  /** Persist the next raw config for one of those rows. */
+  edit(
+    entry: { options: { id: string; name?: string } },
+    change: (current: Record<string, unknown>, inherited: Record<string, unknown>) => Record<string, unknown>,
+  ): Promise<void>
+}
+
+/** The profile row this plugin's configuration lives on. */
+const SETTINGS_ENTRY_ID = 'llm-kiro'
+
+/**
+ * Resolve the Host configuration editor, when this deployment mounts one.
+ * @param ctx - the plugin context.
+ * @returns the editor, or undefined.
+ */
+function configurationEditor(ctx: Context): ConfigurationEditor | undefined {
+  const lookup = (ctx as unknown as { get?: (name: string) => unknown }).get
+  if (typeof lookup !== 'function') return undefined
+  const editor = lookup.call(ctx, 'configEditor') as ConfigurationEditor | undefined
+  return typeof editor?.edit === 'function' && typeof editor.entries === 'function' ? editor : undefined
+}
+
 /** Account targeting one login or import request may name. */
 interface AccountTarget {
   /** Update this stored account instead of adding one. */
@@ -155,12 +188,17 @@ function optionalRevision(value: unknown): number | undefined {
 
 /**
  * Delete the device registration one removed account owned.
+ *
+ * The registration is keyed by the OIDC client, so another stored account may
+ * refresh through the very file this would delete; it goes only once no account
+ * needs it.
  * @param directory - the credential directory this plugin owns.
  * @param credential - the removed account stored credential.
  */
 async function dropRegistration(directory: string, credential: Record<string, unknown>): Promise<void> {
   const hash = credential['clientIdHash']
   if (typeof hash !== 'string' || !/^[a-f0-9]{64}$/u.test(hash)) return
+  if (await new KiroAccountStore(directory).usesRegistration(hash)) return
   try {
     await unlink(join(directory, hash + '.json'))
   } catch (error: unknown) {
@@ -187,6 +225,7 @@ async function modelPayload(
   models: readonly KiroCatalogModel[],
   source: 'live' | 'configured',
   store: FileModelSettingsStore,
+  maxContextWindow?: number,
 ): Promise<unknown> {
   const selection = await modelSelection(store, models)
   return {
@@ -197,7 +236,11 @@ async function modelPayload(
       id: model.id,
       name: model.name ?? model.id,
       description: model.description,
-      contextWindow: model.contextWindow,
+      // Report the capacity the adapter will actually declare, so the page
+      // shows the budget requests are held to rather than the raw catalog value.
+      contextWindow: model.contextWindow === undefined
+        ? undefined
+        : contextCapacity(model.contextWindow, maxContextWindow === undefined ? {} : { maxContextWindow }),
       maxTokens: model.maxTokens,
       thinking: model.thinking ?? true,
       reasoningEfforts: model.reasoningEfforts
@@ -241,11 +284,13 @@ export function registerWebApi(ctx: Context, dependencies: WebDependencies): voi
       profileArn: connection.profileArn ?? managed.profileArn ?? external.profileArn,
       accounts,
       activeAccountId: accounts.activeAccountId,
+      contextWindowCap: connection.maxContextWindow,
       login: publicLogin(login),
       models: await modelPayload(
         cached ?? connection.models,
         cached === undefined ? 'configured' : 'live',
         dependencies.modelSettings,
+        connection.maxContextWindow,
       ),
       usage: dependencies.usage.current(connection),
     }
@@ -369,6 +414,10 @@ export function registerWebApi(ctx: Context, dependencies: WebDependencies): voi
       startedAt: Date.now(),
       ...target,
     }
+    // Publish the pending flow before returning it: the page reads the
+    // verification code from this response and from every later /status poll,
+    // so a flow left unpublished is a sign-in nobody can finish.
+    login = flow
     monitorLogin(
       session.intervalSeconds,
       flow,
@@ -509,6 +558,34 @@ export function registerWebApi(ctx: Context, dependencies: WebDependencies): voi
               sendJson(response, 200, { ok: true, value: await status() })
               return
             }
+            if (path === 'context' && request.method === 'POST') {
+              const body = await readJson(request)
+              const raw = body.maxContextWindow
+              if (raw !== null && raw !== undefined
+                && (typeof raw !== 'number' || !Number.isInteger(raw) || raw <= 0)) {
+                throw new Error('Kiro max context must be a positive whole number of tokens, or null to follow each model')
+              }
+              const requested: number | null = typeof raw === 'number' ? raw : null
+              const editor = configurationEditor(ctx)
+              if (editor === undefined) {
+                throw new Error('This Harness mounts no configuration editor; set maxContextWindow on the llm-kiro row of cordis.patch.yml')
+              }
+              const entry = editor.entries().find(candidate => candidate.options.id === SETTINGS_ENTRY_ID)
+              if (entry === undefined) {
+                throw new Error(`The "${SETTINGS_ENTRY_ID}" row of this profile is not addressable; set maxContextWindow in cordis.patch.yml`)
+              }
+              await editor.edit(entry, (current) => {
+                const next = { ...current }
+                if (requested === null) delete next['maxContextWindow']
+                else next['maxContextWindow'] = requested
+                return next
+              })
+              dependencies.discovery.clear()
+              dependencies.usage.clear()
+              emitUpdated()
+              sendJson(response, 200, { ok: true, value: await status() })
+              return
+            }
             if (path === 'accounts' && request.method === 'GET') {
               sendJson(response, 200, { ok: true, value: await accountStore().snapshot() })
               return
@@ -551,6 +628,7 @@ export function registerWebApi(ctx: Context, dependencies: WebDependencies): voi
                   cached ?? connection.models,
                   cached === undefined ? 'configured' : 'live',
                   dependencies.modelSettings,
+                  connection.maxContextWindow,
                 ),
               })
               return
@@ -573,6 +651,7 @@ export function registerWebApi(ctx: Context, dependencies: WebDependencies): voi
                   models,
                   cached === undefined ? 'configured' : 'live',
                   dependencies.modelSettings,
+                  connection.maxContextWindow,
                 ),
               })
               return
@@ -584,7 +663,7 @@ export function registerWebApi(ctx: Context, dependencies: WebDependencies): voi
               emitUpdated()
               sendJson(response, 200, {
                 ok: true,
-                value: await modelPayload(models, 'live', dependencies.modelSettings),
+                value: await modelPayload(models, 'live', dependencies.modelSettings, connection.maxContextWindow),
               })
               return
             }

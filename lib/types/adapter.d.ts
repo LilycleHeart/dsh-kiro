@@ -18,6 +18,17 @@ export declare const DEFAULT_STREAM_IDLE_TIMEOUT_MS = 300000;
 export declare const DEFAULT_CONTEXT_WINDOW = 200000;
 /** Location of Kiro's native effort field in `additionalModelRequestFields`. */
 export type KiroEffortSchemaPath = 'output_config' | 'reasoning';
+/**
+ * The context capacity a model is reported with.
+ *
+ * `maxContextWindow` is a ceiling rather than a default: it lowers whatever the
+ * model or the live catalog claims and never raises it, so a cap can only make
+ * the harness condense earlier, never later.
+ * @param declared - capacity the model or the connection default declares.
+ * @param connection - resolved connection facts carrying the optional cap.
+ * @returns the effective capacity for this route.
+ */
+export declare function contextCapacity(declared: number, connection: Pick<KiroConnectionOptions, 'maxContextWindow'>): number;
 /** One model entry advertised for the Kiro route. */
 export interface KiroCatalogModel {
     /** Wire model id, sent as `modelId` on every turn. */
@@ -78,6 +89,13 @@ export interface KiroConnectionOptions {
     defaults: RequestDefaults;
     /** Positive context capacity used when the selected model has no exact value. */
     defaultContextWindow: number;
+    /**
+     * Ceiling on any model's reported context capacity. A provider that advertises
+     * a very large window lets one conversation grow to match it, and every turn
+     * then resends that history; a deployment that would rather compact earlier
+     * caps the number here without changing which model answers.
+     */
+    maxContextWindow?: number;
     /** Advisory models exposed to discovery consumers; requests remain unrestricted. */
     models: readonly KiroCatalogModel[];
     /** Maximum provider idle time while one stream read is outstanding. */

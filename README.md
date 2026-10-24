@@ -43,6 +43,7 @@ Built `lib/` artifacts are committed, so a GitHub install does not need to execu
 - Fall back to Kiro IDE/CLI's existing `~/.aws/sso/cache` sign-in when no plugin-managed login exists.
 - Query Kiro's `ListAvailableModels` endpoint so the model picker reflects the signed-in account (Opus, Sonnet, Haiku, and available open-weight routes).
 - Show the account plan, credit usage, and reset date, with a compact persistent model allowlist.
+- Keep the quota beside the composer: a chip showing what is left of the tightest row, amber under 20% and red under 5%, with the full breakdown (plan, used/limit, reset, last read) on hover and a forced refresh on click. It appears only while the session's selected model is routed through Kiro, and reads the quota only then.
 - Auto-discover each model's reasoning efforts, including `none`, `xhigh`, and `max` where Kiro offers them.
 - Stream text, reasoning, and tool calls from Kiro's Amazon EventStream protocol.
 - Send images to every model whose catalog entry accepts them, which unlocks image attachments and the harness's own image-reading tool.
@@ -158,6 +159,7 @@ Every field is optional:
 | `thinking` | `enabled` | `disabled` suppresses reasoning controls and native effort fields. |
 | `reasoningEffort` | model's live default | Optional override: `none`, `off`, `low`, `medium`, `high`, `xhigh`, or `max`; unsupported values are rejected for that model. |
 | `defaultContextWindow` | `200000` | Fallback capacity when discovery reports no exact limit. |
+| `maxContextWindow` | unset | Ceiling on any model's reported capacity; the Harness condenses a conversation as it nears that number. Settable from **Settings → Kiro → Max context**. See [Token budget](#token-budget). |
 | `models` | bundled fallback | Advisory fallback catalog; live account discovery normally replaces it. |
 | `streamIdleTimeoutMs` | `300000` | Maximum idle time while a provider read is outstanding. |
 | `tokenExpiryBufferMs` | `300000` | Refresh an access token this long before expiration. |
@@ -222,6 +224,83 @@ Cache buckets appear only when Kiro reports them, which no observed route does �
 Sending `cachePoint: {type: 'default'}` — which the service model declares on `UserInputMessage`, `AssistantResponseMessage`, and as a `Tool` union arm — is accepted but changes nothing: cold and warm credit costs are identical to 17 significant digits with and without it. `tests/live-cache.spec.ts` is that experiment, kept so the answer can be rechecked rather than reasoned about.
 
 Account credit usage on the settings card is a separate, plan-level figure and is never converted into per-request token counts.
+
+## Token budget
+
+Kiro's live catalog advertises a 1,000,000-token window for the Claude models, and
+the Harness condenses a conversation as it approaches the capacity it was told. At
+the default threshold that means history may grow to ~800,000 tokens before
+anything is summarized, and every turn resends it.
+
+`maxContextWindow` is a ceiling on the capacity this adapter reports:
+
+```yaml
+- id: llm-kiro
+  config:
+    maxContextWindow: 300000
+```
+
+It lowers what a model claims and never raises it, so it can only make the Harness
+condense earlier. It applies to the model list **Settings → Kiro** shows as well as
+to the routing facts.
+
+Set it by hand on the plugin's own profile row:
+
+```yaml
+- id: llm-kiro
+  config:
+    maxContextWindow: 300000
+```
+
+or from **Settings → Kiro → Max context**, which writes that same row through the
+Harness configuration editor and therefore persists to `cordis.patch.yml` and
+hot-reloads without a restart. Leaving the field empty removes the override, so each
+model speaks for itself again. The provider editor on **Settings → Models** cannot
+set it: that editor is a curated per-family form, and an adapter without a curated
+layout shows only a pointer to `cordis.patch.yml`.
+
+### What a ceiling actually triggers
+
+The Harness triggers condensation at `min(W × thresholdRatio, W − O − headroom)`
+with `W` the reported capacity, `O` the routed model's output reservation
+(`maxTokens`, 128,000 on Kiro's Claude models) and `headroom` 65,536 by default.
+For Kiro that makes the second term the binding one at any window below ~967,000:
+
+| `maxContextWindow` | Condenses at | Verbatim tail kept |
+| --- | --- | --- |
+| *(unset)* — 1,000,000 | ~800,000 | ~140,000 |
+| 400,000 | ~206,000 | ~44,000 |
+| 300,000 | ~106,000 | ~28,000 |
+| 250,000 | ~56,000 | ~20,000 |
+| 220,000 | ~26,000 | ~15,000 |
+| 205,000 and below | **refused** — see below | — |
+
+Below roughly 205,000 the default headroom leaves no usable message budget, and
+the Harness refuses to condense that target proactively (overflow recovery still
+works) with a warning naming it. To go lower, lower the Harness setting itself —
+this part is `compaction-basic`, not this plugin:
+
+```yaml
+- id: compaction-basic
+  config:
+    headroomTokens: 32768   # floor becomes ~165,000; also caps the summary output
+    thresholdRatio: 0.5     # only binds while W is large
+```
+
+With `headroomTokens: 32768`, a 200,000 ceiling condenses at ~39,000, and a
+250,000 ceiling at ~89,000. `thresholdRatio` has no effect while the
+`W − O − headroom` term is the smaller one.
+
+Per-model overrides exist too, but they match an exact `provider`/`model` pair,
+so a Kiro-scoped policy has to name every model:
+
+```yaml
+- id: compaction-basic
+  config:
+    modelPolicies:
+      - { provider: kiro, model: claude-opus-5.5, thresholdRatio: 0.5 }
+      - { provider: kiro, model: claude-sonnet-5.5, thresholdRatio: 0.5 }
+```
 
 ## Why some Claude routes need a proxy
 

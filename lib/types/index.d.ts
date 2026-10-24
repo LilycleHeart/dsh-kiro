@@ -18,7 +18,7 @@ import '@deepseek-ai/dsh-settings';
 import z from '@deepseek-ai/schemastery';
 import type { RetryPolicyConfig } from '@deepseek-ai/dsh-llm';
 import type { KiroCatalogModel, KiroConnectionOptions } from './adapter.ts';
-export { DEFAULT_CONTEXT_WINDOW, DEFAULT_STREAM_IDLE_TIMEOUT_MS, KiroAdapter, httpErrorCode, } from './adapter.ts';
+export { contextCapacity, DEFAULT_CONTEXT_WINDOW, DEFAULT_STREAM_IDLE_TIMEOUT_MS, KiroAdapter, httpErrorCode, } from './adapter.ts';
 export type { KiroAdapterOptions, KiroCatalogModel, KiroConnectionOptions } from './adapter.ts';
 export { clearTokenCache, DEFAULT_REGION, kiroAuthMethod, kiroCredentialDirectory, resolveToken, resolveTokenFromDirectories, resolveTokenFromStore, } from './auth.ts';
 export { defaultAccountLabel, KIRO_ACCOUNTS_FILE, KIRO_LEGACY_TOKEN_FILE, KiroAccountStore, MAX_KIRO_ACCOUNTS, } from './accounts.ts';
@@ -67,6 +67,13 @@ export interface Config {
     reasoningEffort: Volatile<'none' | 'off' | 'low' | 'medium' | 'high' | 'xhigh' | 'max' | undefined>;
     /** Positive context capacity used when the selected model has no exact value (default 200,000). */
     defaultContextWindow: Volatile<number>;
+    /**
+     * Ceiling on any model's reported context capacity, in tokens. Absent reports
+     * what each model declares. The Harness condenses a conversation as it
+     * approaches the capacity it is told, so a lower ceiling means fewer tokens
+     * per turn at the cost of summarizing earlier.
+     */
+    maxContextWindow: Volatile<number | undefined>;
     /** Advisory models shown by discovery consumers; defaults to the verified account tier. */
     models: Volatile<KiroCatalogModel[]>;
     /** Maximum provider idle time while one stream read is outstanding (default five minutes). */
@@ -89,6 +96,7 @@ export declare const Config: z<Schemastery.ObjectS<NoInfer<{
     thinking: z<"enabled" | "disabled", "enabled" | "disabled", "volatile">;
     reasoningEffort: z<"none" | "off" | "low" | "medium" | "high" | "xhigh" | "max", "none" | "off" | "low" | "medium" | "high" | "xhigh" | "max", "volatile">;
     defaultContextWindow: z<number, number, "volatile-defined">;
+    maxContextWindow: z<number, number, "volatile">;
     models: z<NoInfer<KiroCatalogModel[]>, NoInfer<KiroCatalogModel[]>, "volatile-defined">;
     streamIdleTimeoutMs: z<number, number, "volatile-defined">;
     tokenExpiryBufferMs: z<number, number, "volatile-defined">;
@@ -100,6 +108,7 @@ export declare const Config: z<Schemastery.ObjectS<NoInfer<{
     thinking: z<"enabled" | "disabled", "enabled" | "disabled", "volatile">;
     reasoningEffort: z<"none" | "off" | "low" | "medium" | "high" | "xhigh" | "max", "none" | "off" | "low" | "medium" | "high" | "xhigh" | "max", "volatile">;
     defaultContextWindow: z<number, number, "volatile-defined">;
+    maxContextWindow: z<number, number, "volatile">;
     models: z<NoInfer<KiroCatalogModel[]>, NoInfer<KiroCatalogModel[]>, "volatile-defined">;
     streamIdleTimeoutMs: z<number, number, "volatile-defined">;
     tokenExpiryBufferMs: z<number, number, "volatile-defined">;

@@ -2,7 +2,11 @@ window.__ModuleLoader__.load({
   id: 'dsh-kiro',
   factory(require) {
     const React = require('react')
-    const { useCallback, useEffect, useMemo, useState } = React
+    const { useCallback, useEffect, useMemo, useState, useSyncExternalStore } = React
+    // React 18 exposes the store hook; a host without it renders the snapshot once.
+    const useStoreSnapshot = typeof useSyncExternalStore === 'function'
+      ? useSyncExternalStore
+      : (_subscribe, getSnapshot) => getSnapshot()
     const API = '/kiro/api'
     const NS = 'dsh-kiro'
     const STYLE_ID = 'dsh-kiro-settings-style'
@@ -72,6 +76,9 @@ window.__ModuleLoader__.load({
       usage: 'Usage',
       refreshUsage: 'Refresh usage',
       refreshingUsage: 'Refreshing…',
+      quotaUnlimited: 'no limit',
+      quotaLeft: '{percent}% left',
+      quotaTitle: 'Kiro usage',
       verified: 'Credential verified',
       verifiedModels: 'models available',
       savedCredential: 'Credentials saved',
@@ -87,6 +94,11 @@ window.__ModuleLoader__.load({
       deselectAll: 'Deselect all',
       selected: 'selected',
       saving: 'Saving…',
+      apply: 'Apply',
+      maxContext: 'Max context',
+      maxContextAuto: 'follow each model',
+      maxContextHint: 'Tokens of context Kiro may fill before the Harness condenses the conversation. Empty follows each model (1,000,000); lower spends fewer tokens per turn.',
+      maxContextInvalid: 'Enter a whole number of tokens, or leave it empty.',
       configured: 'Configured fallback catalog',
       live: 'Live account catalog',
       noModels: 'No models are available yet.',
@@ -161,6 +173,9 @@ window.__ModuleLoader__.load({
       usage: '使用量',
       refreshUsage: '刷新使用量',
       refreshingUsage: '刷新中…',
+      quotaUnlimited: '无限制',
+      quotaLeft: '剩余 {percent}%',
+      quotaTitle: 'Kiro 用量',
       verified: '凭据已验证',
       verifiedModels: '个模型可用',
       savedCredential: '凭据已保存',
@@ -176,6 +191,11 @@ window.__ModuleLoader__.load({
       deselectAll: '取消全选',
       selected: '已选择',
       saving: '保存中…',
+      apply: '应用',
+      maxContext: '最大上下文',
+      maxContextAuto: '跟随各模型',
+      maxContextHint: 'Kiro 在 Harness 压缩对话前可填充的上下文 token 数。留空则跟随各模型（1,000,000）；数值越低，每轮消耗的 token 越少。',
+      maxContextInvalid: '请输入整数 token 数，或留空。',
       configured: '配置的后备模型目录',
       live: '账号实时模型目录',
       noModels: '尚无可用模型。',
@@ -350,7 +370,15 @@ textarea.dshk-input{min-height:78px;resize:vertical;font-family:ui-monospace,SFM
 .dshk-step-head{display:flex;align-items:center;gap:9px;margin-bottom:14px}.dshk-back{padding:5px 8px}.dshk-step-title{font-size:15px;font-weight:700}.dshk-working{padding:38px 12px;text-align:center;color:#6b7280;font-size:13px}
 .dshk-auth-url{display:grid;gap:6px;margin-top:12px}.dshk-auth-url-label{color:#6b7280;font-size:11px;font-weight:650}.dshk-auth-url-row{display:flex;align-items:stretch;gap:7px}.dshk-auth-url-row .dshk-input{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px}.dshk-auth-url-row .dshk-btn{flex:none}
 .dshk-plan{display:inline-flex;margin-left:auto;padding:3px 8px;border-radius:999px;background:#ede9fe;color:#6d28d9;font-size:10px;font-weight:750}
+.dshk-quota{display:inline-flex;align-items:center;gap:5px;padding:3px 8px;border:1px solid #e5e7eb;border-radius:999px;background:#f9fafb;color:#4b5563;font-size:11px;font-weight:600;line-height:1.5;cursor:pointer;white-space:nowrap}
+.dshk-quota:hover{background:#f3f4f6}.dshk-quota:disabled{cursor:progress;opacity:.6}
+.dshk-quota-dot{width:6px;height:6px;flex:none;border-radius:50%;background:#10b981}
+.dshk-quota-low .dshk-quota-dot{background:#f59e0b}.dshk-quota-critical .dshk-quota-dot{background:#ef4444}
 .dshk-usage{display:grid;gap:11px;margin-top:13px;padding-top:13px;border-top:1px solid #eef0f3}.dshk-usage-row{display:grid;gap:6px}.dshk-usage-top{display:flex;align-items:baseline;justify-content:space-between;gap:12px;font-size:12px}.dshk-usage-name{font-weight:650}.dshk-usage-metric{color:#64748b;text-align:right}.dshk-bar{height:6px;overflow:hidden;border-radius:999px;background:#eef0f3}.dshk-fill{height:100%;border-radius:inherit;background:linear-gradient(90deg,#8b5cf6,#6366f1)}.dshk-usage-foot{display:flex;justify-content:space-between;gap:12px;color:#94a3b8;font-size:10px}
+.dshk-context{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:10px;padding-top:10px;border-top:1px solid #eef0f3}
+.dshk-context-label{font-size:12px;font-weight:650;color:#4b5563}
+.dshk-context-input{width:112px}
+.dshk-context-hint{flex:1;min-width:190px;color:#94a3b8;font-size:11px;line-height:1.5}
 .dshk-model-tools{display:flex;align-items:center;gap:9px;flex-wrap:wrap}.dshk-link-btn{padding:0;border:0;background:transparent;color:#6d28d9;font:inherit;font-size:11px;cursor:pointer}.dshk-link-btn:hover{text-decoration:underline}.dshk-link-btn:disabled{cursor:not-allowed;opacity:.5}.dshk-selected-count{color:#94a3b8;font-size:11px}
 .dshk-list{display:grid;gap:5px}.dshk-model{display:flex;align-items:flex-start;gap:10px;padding:8px 10px;border:1px solid #eef0f3;border-radius:9px;background:#fcfcfd;cursor:pointer}.dshk-model:hover{border-color:#c4b5fd;background:#faf8ff}.dshk-model-off{opacity:.68}.dshk-check{width:15px;height:15px;margin:2px 0 0;accent-color:#7c3aed;flex:none}.dshk-model-text{display:grid;min-width:0;gap:2px}.dshk-model-name{font-size:13px;font-weight:650}.dshk-model-sub{overflow:hidden;color:#6b7280;font-size:10.5px;line-height:15px;text-overflow:ellipsis;white-space:nowrap}
 .dshk-error{margin-top:10px;padding:9px 11px;border-radius:9px;background:#fef2f2;color:#b91c1c;font-size:12px;white-space:pre-wrap}
@@ -365,7 +393,7 @@ textarea.dshk-input{min-height:78px;resize:vertical;font-family:ui-monospace,SFM
 .dshk-account-actions{display:flex;flex:none;gap:6px}
 .dshk-danger{color:#b91c1c}
 @media(max-width:620px){.dshk-grid{grid-template-columns:1fr}.dshk-field-wide{grid-column:auto}.dshk-auth-url-row{align-items:stretch;flex-direction:column}.dshk-head{align-items:flex-start;flex-direction:column}.dshk-usage-top{align-items:flex-start;flex-direction:column;gap:2px}.dshk-usage-metric{text-align:left}.dshk-model-sub{white-space:normal}.dshk-account{align-items:flex-start;flex-direction:column}.dshk-account-actions{flex-wrap:wrap}}
-@media(prefers-color-scheme:dark){.dshk-notice{background:#0f2a1a;color:#86efac}.dshk-wrap{color:#f3f4f6}.dshk-card,.dshk-modal{border-color:#303642;background:#171a21}.dshk-modal-head{border-color:#303642}.dshk-status,.dshk-model{background:#1d2129;border-color:#303642;color:#d1d5db}.dshk-model:hover{border-color:#8b5cf6;background:#282333}.dshk-btn,.dshk-input,.dshk-method{border-color:#434b59;background:#20242d;color:#f3f4f6}.dshk-method:hover{border-color:#8b5cf6;background:#282333}.dshk-method-icon{background:#332a52;color:#c4b5fd}.dshk-close:hover{background:#272c35}.dshk-form,.dshk-usage{border-color:#303642}.dshk-field{color:#d1d5db}.dshk-code{border-color:#4338ca;background:#272447;color:#c7d2fe}.dshk-bar{background:#303642}.dshk-plan{background:#332a52;color:#c4b5fd}.dshk-link-btn{color:#c4b5fd}.dshk-account{background:#1d2129;border-color:#303642}.dshk-account-active{border-color:#8b5cf6;background:#282333}.dshk-account-sub{color:#9ca3af}.dshk-danger{color:#fca5a5}}
+@media(prefers-color-scheme:dark){.dshk-notice{background:#0f2a1a;color:#86efac}.dshk-wrap{color:#f3f4f6}.dshk-card,.dshk-modal{border-color:#303642;background:#171a21}.dshk-modal-head{border-color:#303642}.dshk-status,.dshk-model{background:#1d2129;border-color:#303642;color:#d1d5db}.dshk-model:hover{border-color:#8b5cf6;background:#282333}.dshk-btn,.dshk-input,.dshk-method{border-color:#434b59;background:#20242d;color:#f3f4f6}.dshk-method:hover{border-color:#8b5cf6;background:#282333}.dshk-method-icon{background:#332a52;color:#c4b5fd}.dshk-close:hover{background:#272c35}.dshk-form,.dshk-usage{border-color:#303642}.dshk-context{border-color:#303642}.dshk-context-label{color:#d1d5db}.dshk-field{color:#d1d5db}.dshk-code{border-color:#4338ca;background:#272447;color:#c7d2fe}.dshk-bar{background:#303642}.dshk-plan{background:#332a52;color:#c4b5fd}.dshk-link-btn{color:#c4b5fd}.dshk-quota{border-color:#434b59;background:#20242d;color:#d1d5db}.dshk-quota:hover{background:#282333}.dshk-account{background:#1d2129;border-color:#303642}.dshk-account-active{border-color:#8b5cf6;background:#282333}.dshk-account-sub{color:#9ca3af}.dshk-danger{color:#fca5a5}}
 `
       document.head.appendChild(style)
     }
@@ -409,6 +437,111 @@ textarea.dshk-input{min-height:78px;resize:vertical;font-family:ui-monospace,SFM
         d: 'M771.24 549.353C738.445 549.353 733.477 510.097 733.477 486.742C733.477 465.623 737.203 448.977 744.41 438.293C750.621 428.852 759.814 424.131 771.24 424.131C782.672 424.131 792.609 428.852 799.564 438.541C807.516 449.474 811.74 466.12 811.74 486.742C811.74 525.998 796.588 549.353 771.492 549.353H771.24Z',
         fill: 'black',
       }))
+    }
+
+    /** Percentage at the precision a quota figure is worth. */
+    function formatPercent(value) {
+      if (!Number.isFinite(value)) return '0'
+      return new Intl.NumberFormat(undefined, { maximumFractionDigits: 1 }).format(value)
+    }
+
+    /** The row with the least room left, which is the one that decides the next turn. */
+    function tightestRow(usage) {
+      const rows = Array.isArray(usage.rows) ? usage.rows : []
+      const bounded = rows.filter(row => row.unlimited !== true && Number.isFinite(row.remainingPercent))
+      if (bounded.length === 0) return rows[0]
+      return bounded.reduce((worst, row) => row.remainingPercent < worst.remainingPercent ? row : worst)
+    }
+
+    /**
+     * The plan quota beside the composer.
+     *
+     * The settings card is where usage is studied; this is where it is noticed,
+     * because the number that decides whether the next turn is refused should
+     * not require opening a panel. Clicking forces a refresh.
+     */
+    /** Whether this session's next request is routed to Kiro. */
+    function isKiroModel(state) {
+      const current = state?.current
+      return Boolean(current && current.provider === 'kiro' && typeof current.model === 'string')
+    }
+
+    function KiroQuota({ ctx, directory }) {
+      const t = useMemo(() => translator(ctx), [ctx])
+      const [usage, setUsage] = useState(undefined)
+      const [busy, setBusy] = useState(false)
+      const [failed, setFailed] = useState(false)
+
+      // The session's own selection decides eligibility. Its transient `status`
+      // does not: reading usage re-reads usage, and a catalog reload must not
+      // blink the chip away — the same reason the Antigravity chip ignores it.
+      const subscribe = useCallback((onChange) => (
+        typeof directory?.subscribe === 'function' ? directory.subscribe(onChange) : () => {}
+      ), [directory])
+      const getSnapshot = useCallback(() => (
+        typeof directory?.getSnapshot === 'function' ? directory.getSnapshot() : undefined
+      ), [directory])
+      const selected = useStoreSnapshot(subscribe, getSnapshot, getSnapshot)
+      const eligible = isKiroModel(selected)
+
+      const load = useCallback(async (force) => {
+        try {
+          setUsage(await api('/usage', force ? { method: 'POST' } : undefined))
+          setFailed(false)
+        } catch {
+          // A figure that only decorates the composer must not grow an error box.
+          setFailed(true)
+        }
+      }, [])
+
+      useEffect(() => {
+        // A session routed elsewhere has nothing to spend here, and polling for
+        // it would read a quota the user is not using.
+        if (!eligible) return undefined
+        let active = true
+        void load(false)
+        // The Host caches usage for five minutes, so this reads the cache and
+        // reaches the provider only when that entry has expired.
+        const timer = window.setInterval(() => { if (active) void load(false) }, 300000)
+        return () => { active = false; window.clearInterval(timer) }
+      }, [eligible, load])
+
+      if (!eligible || failed || usage === undefined) return null
+      const row = tightestRow(usage)
+      if (row === undefined) return null
+
+      const unlimited = row.unlimited === true || !Number.isFinite(row.remainingPercent)
+      const percent = unlimited ? undefined : row.remainingPercent
+      const label = unlimited ? t('quotaUnlimited') : t('quotaLeft').replace('{percent}', formatPercent(percent))
+      const tone = percent === undefined ? '' : percent < 5 ? ' dshk-quota-critical' : percent < 20 ? ' dshk-quota-low' : ''
+      const detail = [
+        usage.plan,
+        ...(Array.isArray(usage.rows) ? usage.rows : []).map((entry) => {
+          const amount = entry.unlimited === true
+            ? t('quotaUnlimited')
+            : `${formatAmount(entry.used)} / ${formatAmount(entry.limit)}`
+          const left = entry.unlimited === true || !Number.isFinite(entry.remainingPercent)
+            ? ''
+            : ` · ${formatPercent(entry.remainingPercent)}% ${t('remaining')}`
+          const reset = entry.resetAt ? ` · ${t('resets')} ${formatDate(entry.resetAt)}` : ''
+          return `${entry.label}: ${amount}${left}${reset}`
+        }),
+        usage.fetchedAt ? `${t('updated')} ${formatDate(usage.fetchedAt)}` : '',
+      ].filter(Boolean).join('\n')
+
+      return React.createElement('button', {
+        className: `dshk-quota${tone}`,
+        type: 'button',
+        title: detail,
+        'aria-label': `${t('quotaTitle')}: ${label}`,
+        disabled: busy,
+        onClick: () => {
+          setBusy(true)
+          void load(true).finally(() => setBusy(false))
+        },
+      },
+      React.createElement('span', { className: 'dshk-quota-dot' }),
+      label)
     }
 
     function KiroSettings({ ctx }) {
@@ -661,6 +794,25 @@ textarea.dshk-input{min-height:78px;resize:vertical;font-family:ui-monospace,SFM
         try { setStatus(await api('/logout', { method: 'POST' })) }
         catch (cause) { setError(cause.message) } finally { setBusy('') }
       }, [])
+
+      // The context ceiling is a profile row, so it round-trips through the Host
+      // rather than a settings page of its own.
+      const [cap, setCap] = useState('')
+      const [capBusy, setCapBusy] = useState(false)
+      const capValue = status?.contextWindowCap
+      useEffect(() => {
+        setCap(capValue === undefined || capValue === null ? '' : String(capValue))
+      }, [capValue])
+
+      const applyCap = useCallback(async () => {
+        setCapBusy(true); setError('')
+        try {
+          const trimmed = cap.trim()
+          const value = trimmed.length === 0 ? null : Number(trimmed)
+          if (value !== null && (!Number.isInteger(value) || value <= 0)) throw new Error(t('maxContextInvalid'))
+          setStatus(await api('/context', { method: 'POST', body: JSON.stringify({ maxContextWindow: value }) }))
+        } catch (cause) { setError(cause.message) } finally { setCapBusy(false) }
+      }, [cap, t])
 
       const refresh = useCallback(async () => {
         setBusy('models'); setError('')
@@ -926,6 +1078,18 @@ textarea.dshk-input{min-height:78px;resize:vertical;font-family:ui-monospace,SFM
               React.createElement('div', { className: 'dshk-heading' }, t('models')),
               React.createElement('div', { className: 'dshk-meta' }, catalog?.source === 'live' ? t('live') : t('configured'))),
             React.createElement('button', { className: 'dshk-btn dshk-primary', disabled: !!busy || !status?.authenticated, onClick: refresh }, busy === 'models' ? t('refreshing') : t('refresh'))),
+          React.createElement('div', { className: 'dshk-context' },
+            React.createElement('span', { className: 'dshk-context-label' }, t('maxContext')),
+            React.createElement('input', {
+              className: 'dshk-input dshk-context-input', inputMode: 'numeric', value: cap,
+              placeholder: t('maxContextAuto'), 'aria-label': t('maxContext'),
+              onChange: (event) => setCap(event.target.value),
+              onKeyDown: (event) => { if (event.key === 'Enter') void applyCap() },
+            }),
+            React.createElement('button', {
+              className: 'dshk-btn', type: 'button', disabled: !!busy, onClick: () => { void applyCap() },
+            }, capBusy ? t('saving') : t('apply')),
+            React.createElement('span', { className: 'dshk-context-hint' }, t('maxContextHint'))),
           React.createElement('div', { className: 'dshk-model-tools' },
             React.createElement('button', {
               className: 'dshk-link-btn', type: 'button', disabled: !!busy || models.length === enabledModelIds.length,
@@ -994,6 +1158,27 @@ textarea.dshk-input{min-height:78px;resize:vertical;font-family:ui-monospace,SFM
           order: 12,
           label: () => 'Kiro',
         }, () => React.createElement(KiroSettings, { ctx })))
+        // The quota the account is actually spending belongs beside the control
+        // that spends it, the way the Antigravity and Codex plugins show theirs.
+        // The chip answers "what is left of the plan this session is spending",
+        // so it needs the session's own selection to know whether that is Kiro.
+        // A host without that service (or without `inject` at all) registers the
+        // seat without a directory, and the chip then stays invisible rather
+        // than guessing which route the session is on.
+        const registerQuota = (host) => {
+          const directoryFor = host.modelDirectories?.directoryFor
+          host.slots.inject('conversation.input.right', () => host.slots.register({
+            name: 'conversation.input.right',
+            id: 'kiro-quota',
+            order: 20,
+            locale: NS,
+            ...typeof directoryFor !== 'function' ? {} : {
+              inject: (sessionId) => ({ directory: host.modelDirectories.directoryFor(sessionId).store }),
+            },
+          }, (props) => React.createElement(KiroQuota, { ...props, ctx })))
+        }
+        if (typeof ctx.inject === 'function') ctx.inject(['slots', 'modelDirectories'], registerQuota)
+        else registerQuota(ctx)
       },
     }
   },

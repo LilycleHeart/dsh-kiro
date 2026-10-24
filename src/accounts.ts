@@ -21,7 +21,7 @@
  */
 
 import { constants } from 'node:fs'
-import { lstat, mkdir, open, readdir, rename, rmdir, unlink } from 'node:fs/promises'
+import { chmod, lstat, mkdir, open, readdir, rename, rmdir, unlink } from 'node:fs/promises'
 import { dirname, join, resolve } from 'node:path'
 import { createHash, randomUUID } from 'node:crypto'
 import { hostname } from 'node:os'
@@ -413,18 +413,48 @@ export class KiroAccountStore {
     return await readPrivateFile(this.documentPath, 'account document', KIRO_ACCOUNT_DOCUMENT_LIMIT) !== null
   }
 
-  /** Create the credential directory and verify no component is shared. */
+  /**
+   * Create the credential directory, make it owner-only, and verify no
+   * component of its path is shared.
+   */
   private async ensureDirectory(): Promise<void> {
     await mkdir(this.directory, { recursive: true, mode: 0o700 })
-    let part = this.directory
+    await this.ownDirectory()
+    let part = dirname(this.directory)
     while (true) {
       const stat = await lstat(part)
-      if (part === this.directory) assertPrivateDirectory(stat, 'credential directory')
-      else if (!stat.isDirectory()) fail('Kiro credential path contains a non-directory component', 'UNSAFE_ACCOUNT_STORE')
+      if (!stat.isDirectory()) fail('Kiro credential path contains a non-directory component', 'UNSAFE_ACCOUNT_STORE')
       const next = dirname(part)
       if (next === part) break
       part = next
     }
+  }
+
+  /**
+   * Require the credential directory to be this user's and owner-only.
+   *
+   * A wider mode is a leftover rather than an intent: `mkdir` never corrects a
+   * directory that already exists, and an earlier release let the model-settings
+   * writer create this one with the process umask (`umask 002` leaves it
+   * group-writable). Refusing every write over that would leave the installation
+   * unable to sign in or sign out at all, so a directory this user owns is
+   * tightened instead of rejected.
+   */
+  private async ownDirectory(): Promise<void> {
+    let stat = await lstat(this.directory)
+    // Checked before any mode work: `chmod` would follow a symlink and change
+    // the permissions of whatever it points at.
+    if (!stat.isDirectory()) fail('Kiro credential directory is not a directory', 'UNSAFE_ACCOUNT_STORE')
+    /* v8 ignore next 1 -- Windows cannot express POSIX ownership or mode */
+    if (process.platform === 'win32') return
+    if (typeof process.getuid === 'function' && stat.uid !== process.getuid()) {
+      fail('Kiro credential directory is owned by another user', 'UNSAFE_ACCOUNT_STORE')
+    }
+    if ((stat.mode & 0o022) !== 0) {
+      await chmod(this.directory, 0o700)
+      stat = await lstat(this.directory)
+    }
+    assertPrivateDirectory(stat, 'credential directory')
   }
 
   /**
@@ -570,11 +600,17 @@ export class KiroAccountStore {
       await handle.close()
       handle = undefined
       await rename(temporary, this.documentPath)
-      const directory = await open(this.directory, constants.O_RDONLY)
-      try {
-        await directory.sync()
-      } finally {
-        await directory.close()
+      // Commit the replacement name before a caller can act on the write. A
+      // directory cannot be opened for reading on Windows, where the rename is
+      // already durable, so the fsync is limited to the platforms that have it.
+      /* v8 ignore next 8 -- the Windows branch cannot run on a POSIX test host */
+      if (process.platform !== 'win32') {
+        const directory = await open(this.directory, constants.O_RDONLY)
+        try {
+          await directory.sync()
+        } finally {
+          await directory.close()
+        }
       }
     } finally {
       await handle?.close()
@@ -785,6 +821,20 @@ export class KiroAccountStore {
     }, {
       ...options.expectedRevision === undefined ? {} : { expectedRevision: options.expectedRevision },
     })
+  }
+
+  /**
+   * Whether any stored account still needs one device registration.
+   *
+   * A registration file belongs to the OIDC client, not to the account that
+   * happened to arrive with it, so removing one account must not delete a file a
+   * remaining account still refreshes through.
+   * @param clientIdHash - the registration file stem to look for.
+   * @returns true when at least one stored account names that hash.
+   */
+  async usesRegistration(clientIdHash: string): Promise<boolean> {
+    const { document } = await this.load()
+    return document.accounts.some(account => account.credential['clientIdHash'] === clientIdHash)
   }
 
   /**

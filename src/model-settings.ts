@@ -96,7 +96,11 @@ export class FileModelSettingsStore {
 
   private async write(settings: KiroModelSettings): Promise<KiroModelSettings> {
     const next = { ...normalize(settings), updatedAt: Date.now() }
-    await mkdir(dirname(this.file), { recursive: true })
+    // This file lives in the credential directory, whose other writers create it
+    // owner-only. Creating it with the process umask would leave the directory
+    // group-writable on a `umask 002` host, and `mkdir` never corrects a
+    // directory that already exists, so the wider mode would outlive this call.
+    await mkdir(dirname(this.file), { recursive: true, mode: 0o700 })
     const temporary = `${this.file}.tmp`
     await writeFile(temporary, JSON.stringify(next, null, 2), { mode: 0o600 })
     await rename(temporary, this.file)

@@ -133,8 +133,22 @@ export declare class KiroAccountStore {
     registrationPath(clientIdHash: string): string;
     /** Whether the multi-account document exists, written or empty. */
     exists(): Promise<boolean>;
-    /** Create the credential directory and verify no component is shared. */
+    /**
+     * Create the credential directory, make it owner-only, and verify no
+     * component of its path is shared.
+     */
     private ensureDirectory;
+    /**
+     * Require the credential directory to be this user's and owner-only.
+     *
+     * A wider mode is a leftover rather than an intent: `mkdir` never corrects a
+     * directory that already exists, and an earlier release let the model-settings
+     * writer create this one with the process umask (`umask 002` leaves it
+     * group-writable). Refusing every write over that would leave the installation
+     * unable to sign in or sign out at all, so a directory this user owns is
+     * tightened instead of rejected.
+     */
+    private ownDirectory;
     /**
      * Run one mutation under the document lock, taking over a lock whose owner
      * died on this host and leaving one another host holds alone until it ages out.
@@ -212,6 +226,16 @@ export declare class KiroAccountStore {
         accountId: string;
         credential: Record<string, unknown>;
     }>;
+    /**
+     * Whether any stored account still needs one device registration.
+     *
+     * A registration file belongs to the OIDC client, not to the account that
+     * happened to arrive with it, so removing one account must not delete a file a
+     * remaining account still refreshes through.
+     * @param clientIdHash - the registration file stem to look for.
+     * @returns true when at least one stored account names that hash.
+     */
+    usesRegistration(clientIdHash: string): Promise<boolean>;
     /**
      * Sign out every account, keeping an empty document so the installation stays
      * explicitly signed out instead of falling back to the legacy file.

@@ -44,6 +44,7 @@ pnpm dsh --profile web
 - 没有插件自管登录时，自动回退到 Kiro IDE/CLI 的 `~/.aws/sso/cache` 凭据。
 - 调用 Kiro `ListAvailableModels`，让模型选择器反映当前账号实际可用的 Opus、Sonnet、Haiku 与开放权重模型。
 - 显示账号套餐、credits 使用量和重置日期，并提供紧凑、可持久化的模型启用列表。
+- 输入框旁显示额度：取剩余最少的一项，低于 20% 变琥珀色、低于 5% 变红色；悬停查看完整明细（套餐、已用/上限、重置时间、读取时间），点击可强制刷新。仅当本会话选中的模型走 Kiro 时显示，且此时才读取额度。
 - 自动发现每个模型的 reasoning effort，包括 Kiro 提供的 `none`、`xhigh` 与 `max`。
 - 解码 Kiro Amazon EventStream 中的文本、推理与工具调用。
 - 向目录声明接受图片的所有模型发送图片，从而启用图片附件与 harness 自带的读图工具。
@@ -151,6 +152,7 @@ llm-kiro:
 | `thinking` | `enabled` | `disabled` 会隐藏推理控制并停止发送原生 effort 字段。 |
 | `reasoningEffort` | 模型实时默认值 | 可选覆盖：`none`、`off`、`low`、`medium`、`high`、`xhigh` 或 `max`；模型不支持时会拒绝该值。 |
 | `defaultContextWindow` | `200000` | 发现接口未返回准确上限时的后备容量。 |
+| `maxContextWindow` | 未设置 | 任何模型上报容量的上限；Harness 会在对话接近该数值时压缩。可在 **设置 → Kiro → 最大上下文** 中设置。见[Token 预算](#token-预算)。 |
 | `models` | 内置后备目录 | 实时发现不可用时使用的建议目录。 |
 | `streamIdleTimeoutMs` | `300000` | provider 单次读取允许的最大空闲时间。 |
 | `tokenExpiryBufferMs` | `300000` | 提前多久刷新 access token。 |
@@ -215,6 +217,64 @@ Kiro 并非在所有路由上都发送 `tokenUsage`——本账号的所有实�
 服务模型在 `UserInputMessage`、`AssistantResponseMessage` 以及 `Tool` 联合类型中都声明了 `cachePoint: {type: 'default'}`；实测发送会被接受，但没有任何影响：带与不带的冷/热请求 credits 消耗在 17 位有效数字上完全一致。该实验保留在 `tests/live-cache.spec.ts`，以便随时复测而非靠推断。
 
 设置页中的账号 credits 使用量属于套餐层面的独立数据，绝不会换算为单次请求的 token 数。
+
+## Token 预算
+
+Kiro 的实时目录为 Claude 模型上报 1,000,000 token 的窗口，而 Harness 会在对话接近它所知的容量时进行压缩。按默认阈值，历史可以增长到约 800,000 token 才被摘要，且每一轮都要重发。
+
+`maxContextWindow` 限制本适配器上报的容量：
+
+```yaml
+- id: llm-kiro
+  config:
+    maxContextWindow: 300000
+```
+
+它只会下调模型声称的容量，绝不会上调，因此只会让 Harness 更早压缩。该值同时作用于**设置 → Kiro** 显示的模型列表与路由事实。
+
+可以手写在插件自己的 profile 行上：
+
+```yaml
+- id: llm-kiro
+  config:
+    maxContextWindow: 300000
+```
+
+也可以在 **设置 → Kiro → 最大上下文** 中设置：该输入框通过 Harness 的配置编辑器写入同一行，因此会持久化到 `cordis.patch.yml` 并热重载，无需重启。留空即移除该覆盖，各模型恢复各自声明的容量。**设置 → 模型** 的提供方编辑器无法设置它：该编辑器是按适配器家族手写的表单，没有对应布局的适配器只会显示指向 `cordis.patch.yml` 的提示。
+
+### 上限实际触发什么
+
+Harness 在 `min(W × thresholdRatio, W − O − headroom)` 处触发压缩，其中 `W` 为上报容量，`O` 为所选模型的输出预留（Kiro 的 Claude 模型为 `maxTokens` 128,000），`headroom` 默认为 65,536。对 Kiro 而言，只要窗口低于约 967,000，起决定作用的就是第二项：
+
+| `maxContextWindow` | 压缩触发点 | 保留的原文尾部 |
+| --- | --- | --- |
+| *未设置* — 1,000,000 | 约 800,000 | 约 140,000 |
+| 400,000 | 约 206,000 | 约 44,000 |
+| 300,000 | 约 106,000 | 约 28,000 |
+| 250,000 | 约 56,000 | 约 20,000 |
+| 220,000 | 约 26,000 | 约 15,000 |
+| 205,000 及以下 | **被拒绝** — 见下 | — |
+
+低于约 205,000 时，默认 headroom 不再留下可用的消息预算，Harness 会拒绝对该目标做主动压缩（溢出恢复仍然有效）并给出指名警告。要继续下调，请改 Harness 自身的设置——这部分属于 `compaction-basic`，不属于本插件：
+
+```yaml
+- id: compaction-basic
+  config:
+    headroomTokens: 32768   # 下限降至约 165,000；同时限制摘要输出上限
+    thresholdRatio: 0.5     # 仅在 W 很大时起作用
+```
+
+配合 `headroomTokens: 32768` 时，上限 200,000 会在约 39,000 处压缩，上限 250,000 则在约 89,000 处压缩。当 `W − O − headroom` 更小时，`thresholdRatio` 不起作用。
+
+也支持逐模型覆盖，但它匹配精确的 `provider`/`model` 组合，因此针对 Kiro 的策略必须逐一声明模型：
+
+```yaml
+- id: compaction-basic
+  config:
+    modelPolicies:
+      - { provider: kiro, model: claude-opus-5.5, thresholdRatio: 0.5 }
+      - { provider: kiro, model: claude-sonnet-5.5, thresholdRatio: 0.5 }
+```
 
 ## 为什么部分 Claude 路由需要代理
 

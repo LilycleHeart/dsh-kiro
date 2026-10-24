@@ -462,7 +462,10 @@ export async function resolveTokenFromDirectories(
     // single-file credential it migrated from.
     if (await store.exists()) {
       try {
-        return await resolveTokenFromStore(store, resolveOptions)
+        // The document is authoritative for what to read, but it does not make
+        // every directory writable: a rotated credential is only written back
+        // where this caller owns the directory, exactly as `persistRefresh` was.
+        return await resolveStoredAccount(store, resolveOptions, undefined, writable.has(cacheDir))
       } catch (error: unknown) {
         if ((error as { code?: unknown }).code !== 'MISSING_CREDENTIAL') throw error
         lastMissing = error
@@ -486,6 +489,9 @@ export async function resolveTokenFromDirectories(
 
 /**
  * Resolve a usable token for one stored account.
+ *
+ * This plugin owns an account document, so a rotated credential is persisted
+ * unless the caller says the directory is somebody else's.
  * @param store - the multi-account store to read.
  * @param options - refresh transports and the profile expiry buffer.
  * @param accountId - the account to use; the active one when omitted.
@@ -496,6 +502,25 @@ export async function resolveTokenFromStore(
   store: KiroAccountStore,
   options: Omit<TokenSourceOptions, 'cacheDir' | 'persistRefresh'>,
   accountId?: string,
+): Promise<KiroToken> {
+  return resolveStoredAccount(store, options, accountId, true)
+}
+
+/**
+ * Resolve one stored account, writing a rotated credential back only when the
+ * directory belongs to this plugin.
+ * @param store - the multi-account store to read.
+ * @param options - refresh transports and the profile expiry buffer.
+ * @param accountId - the account to use; the active one when omitted.
+ * @param persist - whether a rotated credential may be written to disk.
+ * @returns the token requests and discovery authenticate with.
+ * @throws LlmError('MISSING_CREDENTIAL') when the store holds no such account.
+ */
+async function resolveStoredAccount(
+  store: KiroAccountStore,
+  options: Omit<TokenSourceOptions, 'cacheDir' | 'persistRefresh'>,
+  accountId: string | undefined,
+  persist: boolean,
 ): Promise<KiroToken> {
   const captured = await store.capture(accountId)
   if (captured === null) {
@@ -513,8 +538,19 @@ export async function resolveTokenFromStore(
     },
     // The refresh is written back into the account it came from, and a login
     // that landed meanwhile keeps its result instead of being overwritten.
-    write: async (next: Record<string, unknown>) => {
-      await captured.modify(() => next)
-    },
+    ...persist
+      ? {
+        write: async (next: Record<string, unknown>) => {
+          const written = await captured.modify(() => next)
+          // The single-credential file is the CLI's contract and describes the
+          // account in force, so a rotation of that account has to reach it too:
+          // providers rotate refresh tokens, and a token rotated away would
+          // otherwise strand every reader of that file.
+          if (written !== undefined && (await store.snapshot()).activeAccountId === captured.accountId) {
+            await atomicTokenFile(store.directory, written)
+          }
+        },
+      }
+      : {},
   }, options)
 }

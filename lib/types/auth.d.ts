@@ -54,6 +54,9 @@ export declare function resolveToken(options: TokenSourceOptions): Promise<KiroT
 export declare function resolveTokenFromDirectories(directories: readonly string[], options: DirectoryTokenSourceOptions): Promise<KiroToken>;
 /**
  * Resolve a usable token for one stored account.
+ *
+ * This plugin owns an account document, so a rotated credential is persisted
+ * unless the caller says the directory is somebody else's.
  * @param store - the multi-account store to read.
  * @param options - refresh transports and the profile expiry buffer.
  * @param accountId - the account to use; the active one when omitted.

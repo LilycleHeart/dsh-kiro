@@ -40,6 +40,7 @@ import { registerWebApi } from './web.ts'
 import { KiroUsageService } from './usage.ts'
 
 export {
+  contextCapacity,
   DEFAULT_CONTEXT_WINDOW,
   DEFAULT_STREAM_IDLE_TIMEOUT_MS,
   KiroAdapter,
@@ -196,6 +197,13 @@ export interface Config {
   reasoningEffort: Volatile<'none' | 'off' | 'low' | 'medium' | 'high' | 'xhigh' | 'max' | undefined>
   /** Positive context capacity used when the selected model has no exact value (default 200,000). */
   defaultContextWindow: Volatile<number>
+  /**
+   * Ceiling on any model's reported context capacity, in tokens. Absent reports
+   * what each model declares. The Harness condenses a conversation as it
+   * approaches the capacity it is told, so a lower ceiling means fewer tokens
+   * per turn at the cost of summarizing earlier.
+   */
+  maxContextWindow: Volatile<number | undefined>
   /** Advisory models shown by discovery consumers; defaults to the verified account tier. */
   models: Volatile<KiroCatalogModel[]>
   /** Maximum provider idle time while one stream read is outstanding (default five minutes). */
@@ -240,6 +248,7 @@ export const Config = z.object({
   thinking: z.union(['enabled', 'disabled']).volatile(),
   reasoningEffort: z.union(['none', 'off', 'low', 'medium', 'high', 'xhigh', 'max']).volatile(),
   defaultContextWindow: z.number().step(1).min(1).default(DEFAULT_CONTEXT_WINDOW).volatile(),
+  maxContextWindow: z.number().step(1).min(1).volatile(),
   models: z.array(catalogModel).default(DEFAULT_MODELS).volatile(),
   streamIdleTimeoutMs: z.number().min(Number.MIN_VALUE).max(MAX_TIMER_DELAY_MS).default(DEFAULT_STREAM_IDLE_TIMEOUT_MS).volatile(),
   tokenExpiryBufferMs: z.number().min(0).max(MAX_TIMER_DELAY_MS).default(DEFAULT_TOKEN_EXPIRY_BUFFER_MS).volatile(),
@@ -358,6 +367,10 @@ export function resolveAdapterOptions(config: Options): ResolvedKiroOptions {
     && (!Number.isInteger(config.defaultContextWindow) || config.defaultContextWindow <= 0)) {
     throw new Error('llm-kiro: defaultContextWindow must be a positive integer')
   }
+  if (config.maxContextWindow !== undefined
+    && (!Number.isInteger(config.maxContextWindow) || config.maxContextWindow <= 0)) {
+    throw new Error('llm-kiro: maxContextWindow must be a positive integer')
+  }
   const streamIdleTimeoutMs = config.streamIdleTimeoutMs ?? DEFAULT_STREAM_IDLE_TIMEOUT_MS
   if (!Number.isFinite(streamIdleTimeoutMs)
     || streamIdleTimeoutMs <= 0
@@ -385,6 +398,7 @@ export function resolveAdapterOptions(config: Options): ResolvedKiroOptions {
         : config.reasoningEffort === undefined ? {} : { reasoningEffort: config.reasoningEffort },
     },
     defaultContextWindow: config.defaultContextWindow ?? DEFAULT_CONTEXT_WINDOW,
+    ...config.maxContextWindow === undefined ? {} : { maxContextWindow: config.maxContextWindow },
     models: resolveModels(config.models),
     streamIdleTimeoutMs,
     tokenExpiryBufferMs,
